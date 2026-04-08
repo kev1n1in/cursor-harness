@@ -1,0 +1,77 @@
+---
+description: Module 06 — Human Override. Safety boundary as the last wall. Apply before any destructive action, before any external-world message, and when retries are exhausted.
+alwaysApply: true
+---
+
+# Module 06 — Human Override
+
+> The strictest module. Its purpose isn't to let humans *coach* the agent — it's to **catch destructive actions before they land**. Other modules make the agent good; this one makes sure bad runs don't blow up the world.
+
+## Essence
+
+Classify every action by **reversibility × blast radius**. Require human confirmation for anything that crosses the line.
+
+## Hard Constraints
+
+### 1. Action tiers
+
+| Tier | Examples | Policy |
+|---|---|---|
+| **Safe** | Read, grep, local edit | Auto |
+| **Moderate** | `npm install`, migration dry-run | Auto, but log |
+| **High-risk** | `git push`, DB write, sending messages | **Require confirmation by default** |
+| **Destructive** | `rm -rf`, `git push --force`, `DROP TABLE`, `--no-verify` | **Always confirm + warn** — never bypass |
+
+Don't use tier to decide *if* — use it to decide how much friction.
+
+### 2. Cursor's `beforeShellExecution` is the last wall
+
+cursor-harness ships `scripts/sensitive-file-guard.sh` wired to `beforeShellExecution` and `beforeReadFile`. Refuses access to:
+- `.env*`, `credentials.json`, `service-account.json`, `secrets.json`
+- `*.pem`, `*.key`, `*.pfx`, `*.p12`, `*.jks`, `*.keystore`
+- SSH keys (`id_rsa`, `id_ed25519`)
+- Certificates (`.crt`)
+- Anything with `credentials` or `secret` in the basename
+
+Caveats from Cursor 1.7 beta:
+- `beforeShellExecution` and `beforeMCPExecution` generally respect ASK/DENY responses
+- There's an open forum issue where ASK output sometimes fails to stop the agent. Don't rely solely on hooks — also respect this rule in-band
+
+### 3. Authorization scope does not bleed
+
+- "You can git push this branch" ≠ "you can git push anywhere, forever"
+- Durable authorization lives in AGENTS.md / rules / settings — not in chat history
+- When in doubt about scope: **ask again, don't extrapolate**
+
+### 4. Escalation paths must be explicit
+
+Stop and ask the user if:
+- Retry limit exceeded (module 03's 3-round cap)
+- Contradictory instructions — session A said do, session B said don't
+- Evaluator keeps FAILing with the same gap
+- A destructive action is required to continue
+
+**Autonomy is not a goal — well-bounded autonomy is.** Pushing past an escalation signal is the most common way agents do expensive damage.
+
+### 5. External-world messages
+
+Discord replies, GitHub PR comments, email, Slack, pastebins, gists, diagram renderers — once sent, you cannot unsend. Before sending:
+
+- Is the tone right?
+- Is the target right?
+- Is this the final version, or a draft you're still iterating on?
+
+Third-party renderers (Mermaid, pastebin, diagram hosts) = **publishing**. Assume indexable and permanent.
+
+## Absolute refusals
+
+- Never `--no-verify` without explicit, per-action user consent
+- Never `git push --force` (or equivalent) to a shared branch without explicit, per-action user consent
+- Never edit files matching the sensitive denylist — if you believe the guard is wrong, escalate
+- Never run `migrate:fresh` / `migrate:refresh` / `DROP TABLE` against any database — that's data loss
+- Never bypass the module 03 verification protocol because a change "feels small"
+
+## References
+
+- Anthropic — Responsible Scaling Policy (risk tiering)
+- Cursor — Hooks documentation

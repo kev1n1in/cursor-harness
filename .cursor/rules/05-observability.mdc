@@ -1,0 +1,90 @@
+---
+description: Module 05 — Observability. Tracing, drift monitoring, meta-evaluation. You cannot improve what you can't see. Apply when investigating agent quality, adding metrics, or building golden-task benchmarks.
+globs:
+  - "evals/**"
+  - "scripts/bench-*"
+  - "**/*.jsonl"
+---
+
+# Module 05 — Observability
+
+> The meta-layer: the harness treats itself as a measurable object. Without this layer, every other layer's effect is guesswork.
+
+## Essence
+
+You cannot improve what you can't see.
+
+## Hard Constraints
+
+### 1. Every agent action is traceable
+
+- One task = one trace. Every tool call / subagent dispatch / retry = one span
+- Minimum per span: `input`, `output`, `cost`, `latency`, `retry_count`
+- Minimum viable: JSONL locally. Production: OpenTelemetry / LangSmith / Langfuse
+- **No trace = no debugging.** "It got worse" without traces is unfalsifiable
+
+On Cursor, the `stop` hook logs every stop event to `.cursor-harness/stop-log.jsonl` via `scripts/stop-logger.sh`. Even though Cursor's Stop hook can't block, it can observe — and observation is the foundation of this module.
+
+### 2. Drift monitoring — background fitness function
+
+- Maintain a **golden task set**: 10–20 representative tasks the harness should handle well
+- On every meaningful change (rule edit, hook swap), replay the golden set
+- Record scores as a time series
+- **Score drops > X%** = regression → investigate before shipping
+
+### 3. Meta-evaluation — the harness has its own benchmark
+
+- 7 dimensions × golden tasks = harness benchmark
+- Corresponds to METR's *elicitation gap*: same model, different harness → different score
+- Every rule change → re-run → commit the score alongside the change
+- Otherwise "was that edit a regression or improvement" is a guess
+
+### 4. Measure process, not just output
+
+Output metrics (success rate, test pass rate) miss:
+- Thrashing (many edits, eventually succeeds — slow burn)
+- Over-grep (reading the same file five times)
+- Context exhaustion (hits 95% budget and degrades)
+
+These are the signals that catch "getting dumb" before success rate drops.
+
+### 5. Cost and latency are first-class
+
+Token cost per task. Wall clock per task. A task solved in 30s at $0.05 vs 30min at $5 is the same "success" in a binary metric — but a completely different harness quality.
+
+## Why this is the cure for "long sessions get dumb"
+
+Cross-module pathology:
+- Module 01 (context) may lack summarization checkpoints
+- Module 04 (memory) may load polluted / stale entries every turn
+- **Module 05: without traces, you can't tell which is the culprit**
+
+The fix order has to start here. Patch what you can see.
+
+## cursor-harness deliverables
+
+- [x] `scripts/stop-logger.sh` — appends stop events to `.cursor-harness/stop-log.jsonl`
+- [ ] `evals/golden/` — golden task set (10–20 prompts + expected criteria)
+- [ ] `scripts/bench-harness.mjs` — golden task runner + scorer
+- [ ] Post-change workflow: edit rule → run bench → diff scores → commit with result
+
+## When to apply
+
+- About to change a rule — run the bench first, then after, compare
+- User reports "it's dumber lately" — pull traces, not guesses
+- Adding a new sensor → it should emit a metric, not just a warning line
+- Debugging "why did it use 50k tokens for a 3-file change" — look at the trace
+
+## Anti-patterns
+
+- "I improved the rule, feels better" — with no bench, feels = survivorship bias
+- Logging everything but measuring nothing
+- Looking only at success rate — masks slow-and-expensive successes
+- Running the bench once and never again — drift is a time series
+
+## References
+
+- METR — *Measuring the elicitation gap*
+- Anthropic — *Demystifying evals for AI agents*
+- LangSmith / Langfuse documentation
+- OpenTelemetry GenAI semantic conventions

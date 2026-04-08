@@ -1,0 +1,151 @@
+---
+description: Module 03 — THE CORE. Verification & self-repair protocol. Mandatory pre-reply evaluation for any turn containing write operations. Always read when completing a task.
+alwaysApply: true
+---
+
+# Module 03 — Verification & Self-Repair ⭐ v2 CORE
+
+> Sensors (post-action feedback) + automatic critic→fix→re-verify loop.
+>
+> **This is the headline module.** If you only read one, read this.
+
+## The Rule In One Sentence
+
+**You do not get to self-declare completion.** Something external must agree — and if it disagrees, you must loop through fix → re-verify, not just report the problem to the user.
+
+## Why The Mechanism Is Different On Cursor
+
+On Claude Code, this protocol is enforced by a Stop hook that spawns an evaluator subagent in isolated context. On Cursor, **the Stop hook is read-only in 1.7 beta** ([GitButler deep dive](https://blog.gitbutler.com/cursor-hooks-deep-dive), [Cursor forum bug reports](https://forum.cursor.com/t/hook-ask-output-not-stopping-agent/149002)). Hook-level enforcement is not available. Therefore this module is **enforced by rule** — which means *you* must remember to run it.
+
+Consequences:
+- This protocol runs in your main context, burning more tokens than the Claude Code equivalent
+- You are trusted to actually run it. If you skip it, nothing catches you. Don't skip it
+
+See `docs/LIMITATIONS.md` for the full technical reason.
+
+## The Protocol (What You Must Do)
+
+### Step 1 — Detect: was this turn a write turn?
+
+Before responding to the user, check if you used any of these in the current turn:
+
+**Tool-level writes:**
+- Any file edit, create, delete (via Cursor's file tools)
+- Any `apply_patch` / search-replace
+- NotebookEdit equivalent
+
+**Shell-level writes** (any bash/terminal command containing):
+- `git commit`, `git push`, `git add`, `git reset`, `git rebase`, `git merge`, `git cherry-pick`, `git revert`, `git tag`, `git branch -d/-D`
+- `rm`, `mv`, `chmod`, `chown`, `mkdir`, `touch`, `tee`
+- Output redirection: `>`, `>>`
+- Package ops: `npm/pnpm/yarn (install|add|remove|publish|uninstall)`
+- Docker: `docker run/rm/build/push`, `docker compose up/down`
+- Make: `make install/build/deploy`
+- Mutating HTTP: `curl -X POST/PUT/DELETE/PATCH`
+- GitHub CLI: `gh pr create/merge/close`, `gh repo create/delete/rename`, `gh release create`
+
+If **none** of the above happened this turn → **skip verification, reply directly**. You just did a read-only turn (investigation, explanation, planning). No need to verify.
+
+If **any** happened → proceed to Step 2.
+
+### Step 2 — Run computational sensors
+
+These are cheap, deterministic, and non-negotiable:
+
+1. **Typecheck** — if the package under the edited file has a `typecheck` script, run it:
+   - `pnpm typecheck` / `npm run typecheck` / `yarn typecheck`
+   - Timeout 60 seconds
+2. **Tests near the edit** — if there's a test file adjacent to the edited file (e.g., `foo.ts` → `foo.test.ts`), run just that file
+3. **Lint** — if cheap (`eslint` / `ruff` / `rubocop`), run it
+
+Capture exit codes and the last 30 lines of any failure as **evidence**.
+
+### Step 3 — Run the inferential sensor (self-review)
+
+Step into "evaluator mode" (explicitly — you are now the critic, not the author). Do not edit. Review the diff against:
+
+1. **Intent alignment** — does the diff match the user's stated goal? If there's drift (you added stuff not asked for, or removed the wrong thing), that's a FAIL by drift, not a bug
+2. **Correctness** — logic errors, off-by-one, null handling, async misuse
+3. **Scope creep** — did you change unrelated code
+4. **Naming / conventions** — matches project style
+5. **Regressions** — did you break anything already tested
+
+### Step 4 — Produce a verdict (internal, not shown to user)
+
+Format:
+
+```json
+{
+  "schema_version": "evaluator-result.v1",
+  "verdict": "PASS | WARN | FAIL",
+  "intent_alignment": "ALIGNED | DRIFT | UNKNOWN",
+  "checks": [
+    {"id": "tsc",    "status": "PASS | FAIL | SKIPPED", "evidence": "..."},
+    {"id": "tests",  "status": "...", "evidence": "..."},
+    {"id": "lint",   "status": "...", "evidence": "..."},
+    {"id": "review", "status": "...", "evidence": "..."}
+  ],
+  "gaps": [
+    {
+      "severity": "critical | major | minor",
+      "category": "correctness | regression | scope | quality | security",
+      "location": "file:line",
+      "issue": "short",
+      "expected": "what should be true",
+      "observed": "what is actually true",
+      "suggestion": "concrete fix"
+    }
+  ],
+  "followups": ["things to verify next round"]
+}
+```
+
+**Verdict rules:**
+
+| Condition | Verdict |
+|---|---|
+| Any `critical` gap | FAIL |
+| Any `major` gap | FAIL |
+| Only `minor` gaps | WARN |
+| No gaps | PASS |
+| Security issue at any severity | FAIL |
+| `intent_alignment == DRIFT` | FAIL + escalate — do NOT auto-fix drift |
+
+### Step 5 — Fix loop (if FAIL)
+
+If FAIL:
+1. Apply the fixes from `gaps[].suggestion`
+2. Go back to Step 2 (re-run sensors)
+3. Produce a new verdict
+
+**Hard cap: 3 rounds per turn.** If round 3 still FAILs:
+- Stop looping
+- Reply to the user with: what you did, what still fails, and the shortest reproduction of the remaining failure
+- Do **not** pretend it's done
+
+### Step 6 — Respond
+
+Only after PASS (or WARN with only minor gaps) may you send your final reply. In the reply, briefly mention that verification passed — the user wants to know it actually happened.
+
+## Behavioral Sensors
+
+Beyond the diff-level sensors, watch your own process:
+
+- **Edit thrashing**: if you've edited the same file 4+ times this turn, **stop**. You are thrashing. Re-read the file's full relevant section and fix in one pass — not small incremental pokes
+- **Repeated-grep**: grepping for the same term three times means you're disoriented. Reassess the approach
+- **Repeated same error**: if the same error message appears three times in your output this turn, the approach is wrong — don't try one more variation
+
+## Anti-patterns
+
+- "I wrote the code and it looks right" — no sensor, not done
+- Reporting a list of issues to the user without trying to fix them — that's linear termination, forbidden
+- Re-reading the file five times instead of running a typecheck — stalling
+- Using the same "evaluator mode" pass to both find and fix issues — player-referee. Find first, then fix, then re-verify cleanly
+
+## References
+
+- Shinn 2023 — Reflexion
+- Gou 2023 — CRITIC
+- Huang 2023 — LLMs Cannot Self-Correct Reasoning Yet (reverse evidence: external signal required)
+- Madaan 2023 — Self-Refine
+- Anthropic — Demystifying evals for AI agents

@@ -1,0 +1,24 @@
+# cursor-harness runtime artifacts
+.cursor-harness/
+.cursor-harness/*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Node modules if example projects get added later
+node_modules/

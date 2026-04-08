@@ -1,0 +1,71 @@
+---
+description: Module 02 — Tool Orchestration. Capability surface design, role separation, retry policy. Apply when planning multi-step tasks, dispatching subagents, or choosing between tool strategies.
+globs:
+  - "**/*"
+---
+
+# Module 02 — Tool Orchestration
+
+> Capability surface layer. Not just a tool list — a design for how tools relate, dispatch, and fall back.
+
+## Essence
+
+Decide **what the agent can do, in what order, and what happens when things break** — before acting.
+
+## Hard Constraints
+
+### 1. Specific tools beat general tools
+
+Prefer structured, auditable tools over raw shell:
+
+| Prefer | Over |
+|---|---|
+| `read_file` / dedicated file readers | `cat` / `head` |
+| Cursor's grep / semantic search | `grep` / `rg` in shell |
+| Cursor's file editor | `sed` / `awk` / heredoc writes |
+
+Specific tools are auditable, permission-controllable, and produce structured output. Raw shell escapes governance.
+
+### 2. Role separation = tool set separation
+
+- **Planner**: read-only (no edit, no write)
+- **Main (executor)**: full access
+- **Evaluator** (module 03): read-only, plus Bash for tests
+
+Never let the same context both act and judge — that's player-referee, and it produces flattering-but-wrong verdicts.
+
+On Cursor this is enforced by prompt discipline (there are no first-class subagents with tool whitelists as in Claude Code). When you run self-verification in module 03, **explicitly step into "evaluator mode"**: read only, judge only, no edits until after the verdict.
+
+### 3. Plan-and-Execute for > 5 steps
+
+- Naive ReAct (Thought → Action → Observation per step) burns tokens on long tasks
+- Plan-and-execute (or ReWOO) produces a plan first, executes batched, has clearer recovery points
+- Rule of thumb: > 5 steps → plan first
+
+### 4. Subagents (Cursor's background agents, MCP tools) are tools, not servants
+
+If you dispatch to an MCP tool or background agent:
+- Prompt must be **self-contained** — the subagent cannot see your conversation
+- Give it the *problem*, not the *steps*
+- Specify the return shape ("report in ≤200 words", "return JSON matching schema X")
+
+### 5. Retry policy: max 2 then reassess
+
+Same action failing twice = third attempt is wasted. Stop and reassess. Different tactics (different input, different tool, different approach) count as *different* actions — but same-input retry 3+ is always a trap.
+
+## Destructive-action coordination with module 06
+
+Any tool call classified "destructive" by module 06 (rm -rf, force push, drop table, --no-verify) routes through human confirmation — not a tool-selection optimization.
+
+## When to apply
+
+- Planning a task with > 3 tool steps — pick strategy
+- About to dispatch a background agent — verify prompt is self-contained
+- Second retry failing — this is your reassess signal
+- About to `bash grep` or `bash sed` — use the specific tool instead
+
+## References
+
+- Yao 2022 — ReAct
+- Xu 2023 — ReWOO
+- arXiv 2507.11633 — General Modular Harness for LLM Agents

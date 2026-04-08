@@ -1,0 +1,68 @@
+---
+description: Module 01 — Context Engineering. Feedforward control; what the agent sees before it acts. Apply when starting a task, deciding context load strategy, or designing rules/AGENTS.md contents.
+globs:
+  - "**/*"
+---
+
+# Module 01 — Context Engineering
+
+> Feedforward / Guides side of the Harness Engineering framework.
+
+## Essence
+
+Context Engineering decides **what information the agent sees before acting** — and, equally important, what it *doesn't* see. Attention is a budget, not a ceiling.
+
+## Hard Constraints
+
+### 1. Layered injection
+
+Three layers, load on demand:
+
+- **L1 (info boundary)** — success criteria, scope, constraints
+- **L2 (tool surface)** — what's available, role separation
+- **L3 (execution)** — step flow, retry policy
+
+Don't cram all of L1/L2/L3 into AGENTS.md. Let Cursor's `.mdc` rules surface contextually. A global AGENTS.md > 30 lines is a smell — split into per-module rules.
+
+### 2. Context budget
+
+Reserve **≥30%** of the window for feedback (tool results, intermediate state). Pushing prompt + guides past ~60% starves the rest of the turn.
+
+**Lost in the middle**: critical instructions go at the top or bottom of a message, never the middle. Do not paste the same example three times "to be safe" — it erodes the salience of everything else.
+
+### 3. AGENTS.md is a contract, not a README
+
+Write preferences and prohibitions, not derivable facts. Bad entries: "this project uses TypeScript", "the API is in api/". Good entries: "never amend published commits", "user prefers pnpm over npm because of workspace handling".
+
+Rule of thumb: if `git` + `grep` can compute it, don't write it down.
+
+### 4. Fight context rot
+
+Long sessions drift. Early decisions get forgotten around step 50–100. **Don't rely on the model remembering step 1 at step 100.**
+
+- Hard checkpoint every N steps: summarize progress, refresh the goal
+- On restart, carry a *summary*, not the full history
+- Symptoms of rot: repeating already-tried approaches, asking questions already answered, forgetting a user correction from earlier in the same session
+
+### 5. Just-in-time loading
+
+Don't pre-load the entire repo map "for reference". Load on first need. Every speculative load taxes the current task's attention.
+
+## When to apply
+
+- Starting a new task → pick what to load up-front vs. lazily
+- Writing a new rule → keep it focused on one axis
+- Noticing rot (corrections being forgotten) → summarize + restart
+- AGENTS.md growing past 30 lines → split into rules
+
+## Anti-patterns
+
+- "Put all the rules in AGENTS.md, it'll figure it out" — it won't
+- Dumping a grep tree of the repo into context for reference
+- Letting a session run 200+ steps without any summarization checkpoint
+
+## References
+
+- Liu et al. 2023 — *Lost in the Middle*
+- Anthropic — Long context prompting
+- Fowler — Harness Engineering

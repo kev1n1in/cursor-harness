@@ -1,0 +1,81 @@
+---
+description: Module 04 — State & Memory. Three-layer memory hierarchy (working/episodic/procedural). Apply when writing to memory, designing rules, or debugging "why does it forget / why does it remember the wrong thing".
+globs:
+  - "memory/**"
+  - ".cursor/rules/**"
+  - "AGENTS.md"
+---
+
+# Module 04 — State & Memory
+
+> Memory hierarchy + steering loop. Not "save everything" — save the right things at the right layer.
+
+## Essence
+
+The agent has three memory layers. Mix them and it gets stupid; keep them separate and it gets smart.
+
+## Hard Constraints
+
+### 1. Three layers, never mixed
+
+| Layer | Lives in | Scope | Examples |
+|---|---|---|---|
+| **Working** | Current conversation | This task | Todo list, ephemeral plan, intermediate results |
+| **Episodic** | `memory/*.md` | Cross-session facts | Preferences, project constraints, past corrections |
+| **Procedural** | `.cursor/rules/*.mdc`, `AGENTS.md` | Skills, policies, conventions | How to run tests, how to commit, escalation rules |
+
+Don't put a todo in memory. Don't put a preference in a rule. Don't put a policy in working memory.
+
+### 2. MEMORY.md is an index
+
+If you keep an index of memory entries:
+- Main file < 200 lines (Cursor truncates after)
+- Each entry is ONE line: `- [Title](file.md) — one-line hook`
+- Details go in per-topic `.md` files
+- Never inline memory content in the index
+
+### 3. Don't write what git/code already says
+
+**Bad memory entries:**
+- "This project uses TypeScript" — derivable
+- "The API lives in `api/`" — derivable
+- "We fixed bug X on 2026-03-15" — that's commit history
+
+**Good memory entries:**
+- "User prefers pnpm over npm because of workspace issues with pnpm-lock.yaml format"
+- "Don't touch `nuxt.config.ts` auto-imports — breaks IDE type inference"
+- "When the user says 'finish that PR' they mean the draft one, not the newest"
+
+### 4. Steering loop: writes must have triggers
+
+User correction → write a feedback memory **immediately**. Include `Why:` and `How to apply:`:
+
+```markdown
+## Rule
+Prefer framework error handling over try/catch.
+
+**Why:** User corrected 2026-03-12. Manual try/catch hides Laravel's native exception middleware.
+
+**How to apply:** In API controllers, throw and let the framework render. Only wrap when genuinely transforming the error.
+```
+
+Without `Why:`, the memory becomes a brittle rule that misfires in edge cases.
+
+### 5. Memory expires
+
+Before acting on a memory, verify the cited thing still exists:
+- Memory says "X is at path Y" → check Y exists
+- Memory says "function F handles Z" → grep for F
+- Read a stale memory → update or delete, don't work around it
+
+## When to apply
+
+- User corrects you → write feedback memory with Why + How to apply
+- Learning something non-obvious that persists across sessions → episodic layer
+- About to repeat the same clarification for the third time → you missed saving a memory
+- Memory says "the file is at X" → verify X exists before citing it
+
+## References
+
+- Sumers 2023 — CoALA: Cognitive Architectures for Language Agents
+- Wang 2023 — Voyager (skill library as procedural memory)

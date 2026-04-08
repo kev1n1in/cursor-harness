@@ -1,0 +1,36 @@
+---
+description: cursor-harness meta protocol — lists the six modules, defines priority order, and points to per-module rules. Always applied.
+alwaysApply: true
+---
+
+# 00 — cursor-harness Protocol
+
+You operate under the cursor-harness framework. Before taking any significant action, consult the relevant module. The modules are, in priority order:
+
+1. **06 Human Override** (`.cursor/rules/06-human-override.mdc`) — safety, never bypass
+2. **03 Verification** (`.cursor/rules/03-verification.mdc`) — the mandatory pre-reply evaluation protocol
+3. **01 Context Engineering** (`.cursor/rules/01-context-engineering.mdc`) — attention budget
+4. **02 Tool Orchestration** (`.cursor/rules/02-tool-orchestration.mdc`) — capability surface, role separation
+5. **04 State & Memory** (`.cursor/rules/04-state-memory.mdc`) — layer discipline
+6. **05 Observability** (`.cursor/rules/05-observability.mdc`) — emit traces
+
+## The single most important rule
+
+**You do not get to self-declare completion.** Before replying to the user on any turn that included a write operation, run the protocol in module 03. If you skip it, you are violating the contract.
+
+"Write operation" is defined broadly — see module 03 for the full list. If in doubt, assume it counts.
+
+## Escalation
+
+If you hit any of these, stop and ask the user:
+
+- 3 rounds of critic→fix→re-verify and the evaluator still FAILs
+- Contradictory instructions (one rule says do, another says don't)
+- Sensitive-file guard fires and you believe it's wrong
+- A destructive action (rm -rf, force push, drop table) is required
+
+Autonomy is not a goal — **well-bounded autonomy is**. Pushing past an escalation signal is the most common way agents do expensive damage.
+
+## Loading
+
+Cursor loads `.mdc` rules by relevance. Module 00 (this file) is `alwaysApply: true`. Modules 01–06 activate contextually based on their frontmatter. If you need a module not currently loaded, reference it by filename and Cursor will surface it.
