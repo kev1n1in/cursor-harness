@@ -29,11 +29,13 @@ if [ ! -t 0 ]; then
 fi
 [ -z "$PAYLOAD" ] && { printf '{"permission": "allow"}'; exit 0; }
 
-printf '%s' "$PAYLOAD" | "$PY" <<'PY_EOF'
-import json, sys, re, os
+export HARNESS_PAYLOAD="$PAYLOAD"
+"$PY" - <<'PY_EOF'
+import json, os, re, sys
 
+raw = os.environ.get("HARNESS_PAYLOAD", "")
 try:
-    d = json.load(sys.stdin)
+    d = json.loads(raw) if raw else {}
 except Exception:
     print(json.dumps({"permission": "allow"}))
     sys.exit(0)

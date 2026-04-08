@@ -35,31 +35,44 @@ if [ -z "$PY" ] || [ -z "$PAYLOAD" ]; then
   exit 0
 fi
 
-# Append a normalized log line via python
-"$PY" <<PY_EOF
-import sys, json, os, datetime
+# Append a normalized log line via python. Payload via env var to avoid
+# argv escaping; explicit `-` so python reads the script from stdin (heredoc).
+export HARNESS_PAYLOAD="$PAYLOAD"
+export HARNESS_TS="$TS"
+export HARNESS_LOG_FILE="$LOG_FILE"
+"$PY" - <<'PY_EOF' 2>/dev/null
+import os, json
+
+raw = os.environ.get("HARNESS_PAYLOAD", "")
+ts = os.environ.get("HARNESS_TS", "")
+log_file = os.environ.get("HARNESS_LOG_FILE", "")
 
 try:
-    d = json.loads(sys.argv[1])
+    d = json.loads(raw) if raw else {}
 except Exception as e:
     d = {"_parse_error": str(e)}
 
 line = {
-    "ts": "$TS",
+    "ts": ts,
     "session_id": d.get("session_id", "unknown"),
     "event": "stop",
     "payload_keys": sorted(list(d.keys()))[:20],
 }
 
-# If the payload includes a minimal summary of recent tool use, capture it
 recent = d.get("recent_tool_calls") or d.get("tool_calls") or []
 if isinstance(recent, list):
     line["recent_tool_count"] = len(recent)
-    line["recent_tools"] = [t.get("name") or t.get("tool_name") for t in recent if isinstance(t, dict)][-10:]
+    line["recent_tools"] = [
+        t.get("name") or t.get("tool_name")
+        for t in recent if isinstance(t, dict)
+    ][-10:]
 
-with open("$LOG_FILE", "a", encoding="utf-8") as f:
-    f.write(json.dumps(line, ensure_ascii=False) + "\n")
-PY_EOF "$PAYLOAD" 2>/dev/null
+try:
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(json.dumps(line, ensure_ascii=False) + "\n")
+except Exception:
+    pass
+PY_EOF
 
 printf '{"permission": "allow"}'
 exit 0
