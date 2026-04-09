@@ -26,7 +26,7 @@ The six modules are identical in intent. The *mechanisms* enforcing them differ 
 |---|---|---|---|
 | Refuse sensitive file edits | `PreToolUse` matcher `Write\|Edit\|MultiEdit` → `scripts/sensitive-file-guard.sh` | `beforeReadFile` + `beforeShellExecution` → `scripts/sensitive-file-guard.sh` | Cursor's hook respects `permission: "deny"` — mostly equivalent |
 | Thrashing sensor | `PostToolUse` matcher `Edit\|Write\|MultiEdit` → `scripts/edit-thrashing.sh` | Not implemented at hook level | Cursor doesn't have a PostToolUse equivalent that reliably sees tool input. Moved to rule text in `02-tool-orchestration.mdc` |
-| Typecheck after edit | `PostToolUse` → `scripts/auto-test-runner.sh`, injects to stderr | `afterFileEdit` → `scripts/after-edit-typecheck.sh`, injects via `user_message` | Same intent; the Windows `user_message` bug reduces reliability |
+| Typecheck after edit | `PostToolUse` → `scripts/auto-test-runner.sh`, injects to stderr (reaches the agent) | `afterFileEdit` → `scripts/after-edit-typecheck.sh`, writes to `.cursor-harness/typecheck-results.jsonl` **only** (hook is notification-only; agent must run typecheck itself per module 03) | Fundamentally different — cursor hook can't feed results back to the agent |
 | Auto-evaluate before reply | `Stop` hook 2-entry: command gate + agent subagent. Returns `{"decision": "block"}` on FAIL | **No equivalent** — Cursor's `stop` hook ignores output JSON. Enforcement moved to rules (`03-verification.mdc`) | This is the main delta. See LIMITATIONS.md |
 | Observability of stop events | Implicit in the agent dispatch | `stop` hook → `scripts/stop-logger.sh` writes JSONL | Observation-only on Cursor, still useful for post-hoc audit |
 
@@ -60,10 +60,24 @@ Cursor has MCP tools and background agents, but no direct equivalent of "subagen
 
 ## Forward-compat plan
 
-When Cursor 1.8+ starts respecting `stop` hook output JSON (watch [cursor.com/changelog](https://cursor.com/changelog)):
+There are **two** notification-only hooks we want Cursor to promote to enforceable:
 
-1. Port `scripts/stop-gate.sh` from cc-harness (change a few stdin field names)
-2. Update `hooks.json` to add a second `stop` entry that runs the evaluator
+### If `stop` starts respecting output JSON
+
+1. Port `scripts/stop-gate.sh` from cc-harness (adjust stdin field names for Cursor's payload shape: `conversation_id` / `generation_id` / `workspace_roots` instead of Claude Code's `session_id` / `transcript_path`)
+2. Update `.cursor/hooks.json` to add a second `stop` entry that runs the evaluator agent
 3. Relax `.cursor/rules/03-verification.mdc` from "MUST run" to "hook runs this, you fix FAIL results"
 
-The migration is intentionally small — rules and hooks are isomorphic in intent; we're just moving where the enforcement lives.
+### If `afterFileEdit` starts respecting output JSON
+
+1. Update `scripts/after-edit-typecheck.sh` to return `{"agentMessage": "..."}` on typecheck failure
+2. Relax module 03's "run typecheck yourself" to "investigate any typecheck warning you see from the hook"
+3. Keep the JSONL log as a backup / audit trail
+
+### Watch list
+
+- [cursor.com/changelog](https://cursor.com/changelog) — Cursor release notes
+- [cursor.com/docs/hooks](https://cursor.com/docs/hooks) — hook spec updates
+- [forum.cursor.com — Hooks category](https://forum.cursor.com/tag/hooks) — community reports of beta → stable promotions
+
+The migration is intentionally small — rules and hooks are isomorphic in intent; we're just moving where the enforcement lives when Cursor lets us.

@@ -88,24 +88,26 @@ def check_path(path):
 for c in candidates:
     reason = check_path(c)
     if reason:
+        # Use agentMessage (sent to the AI) + userMessage (shown to human)
+        # per Cursor hook response schema (camelCase field names).
         print(json.dumps({
             "permission": "deny",
-            "reason": f"[cursor-harness/module-06] refused access to sensitive file — {reason}"
+            "agentMessage": f"[cursor-harness/module-06] blocked sensitive file access ({reason}). You are forbidden from reading or editing files matching the cursor-harness denylist (.env*, keys, credentials, secrets). If this is wrong, escalate to the human — do not work around it.",
+            "userMessage": f"cursor-harness blocked agent from sensitive file — {reason}"
         }))
         sys.exit(0)
 
 # Check shell commands for sensitive file references
 if cmd:
-    # Quick pre-filter: any token that looks like a sensitive filename
     tokens = re.split(r"[\s;&|<>]+", cmd)
     for tok in tokens:
-        # Strip simple quoting
         tok_clean = tok.strip("\"'")
         reason = check_path(tok_clean)
         if reason:
             print(json.dumps({
                 "permission": "deny",
-                "reason": f"[cursor-harness/module-06] refused shell command touching sensitive file — {reason}. Full command: {cmd[:200]}"
+                "agentMessage": f"[cursor-harness/module-06] blocked shell command that touches a sensitive file ({reason}). Full command: {cmd[:200]}. You are forbidden from running shell commands that read, write, or delete files matching the cursor-harness denylist. Do not work around this.",
+                "userMessage": f"cursor-harness blocked shell command — {reason}"
             }))
             sys.exit(0)
 

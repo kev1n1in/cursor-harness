@@ -29,9 +29,8 @@ fi
 TS=$(date '+%Y-%m-%dT%H:%M:%S%z')
 
 if [ -z "$PY" ] || [ -z "$PAYLOAD" ]; then
-  # Degraded: write timestamp only
+  # Degraded: write timestamp only and exit (stop is informational-only)
   echo "{\"ts\":\"$TS\",\"note\":\"degraded: no python or empty payload\"}" >> "$LOG_FILE" 2>/dev/null
-  printf '{"permission": "allow"}'
   exit 0
 fi
 
@@ -74,5 +73,5 @@ except Exception:
     pass
 PY_EOF
 
-printf '{"permission": "allow"}'
+# stop is a notification hook — no structured response expected. Exit cleanly.
 exit 0

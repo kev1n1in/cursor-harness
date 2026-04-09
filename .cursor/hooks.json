@@ -1,0 +1,26 @@
+{
+  "$schema": "https://unpkg.com/cursor-hooks@latest/schema/hooks.schema.json",
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "bash ./scripts/sensitive-file-guard.sh"
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "command": "bash ./scripts/sensitive-file-guard.sh"
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": "bash ./scripts/after-edit-typecheck.sh"
+      }
+    ],
+    "stop": [
+      {
+        "command": "bash ./scripts/stop-logger.sh"
+      }
+    ]
+  }
+}

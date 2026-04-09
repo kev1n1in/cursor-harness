@@ -4,30 +4,71 @@
 
 ## TL;DR
 
-Cursor 1.7 (released October 2025) added a hook system for agent lifecycle events. Most of the hooks work as advertised. **One critical hook — `stop` — is observation-only in the beta**: it fires when the agent finishes, but Cursor does not read its output JSON, which means you cannot block the agent from replying, cannot inject context into the agent's next step, and cannot implement the "auto-evaluation before reply" pattern at hook level.
+Cursor 1.7 (released October 2025) added a hook system for agent lifecycle events. Some hooks are genuinely able to block or inject context; **others are notification-only** — they fire, but Cursor ignores any JSON you return, so you cannot use them to enforce anything.
 
-This is the single biggest difference between cursor-harness and its Claude Code sister project [cc-harness](https://github.com/kev1n1in/cc-harness). Everything else is a direct port; this module is a workaround.
+Of the six hook events, **three are notification-only**:
+- `stop` — can't block the agent from replying or inject evaluation results back
+- `afterFileEdit` — can't surface typecheck/lint errors back to the agent
+- `beforeSubmitPrompt` — can't inspect or modify the prompt
 
-## The Specific Limitation
+And **three can actually enforce policy**:
+- `beforeShellExecution` — can deny/ask + inject `agentMessage` / `userMessage`
+- `beforeMCPExecution` — same enforcement surface
+- `beforeReadFile` — can deny file reads with a message
 
-### What Cursor's `stop` hook does
+The combination means the two enforcement patterns cursor-harness most wants — **"auto-evaluate before reply"** and **"inject typecheck errors after edit"** — both land on notification-only hooks. cursor-harness has to work around both.
 
-Cursor 1.7's hooks documentation ([cursor.com/docs/hooks](https://cursor.com/docs/hooks)) lists the following lifecycle events:
-- `beforeShellExecution` — pre-gate shell commands
-- `beforeMCPExecution` — pre-gate MCP tool calls
-- `beforeReadFile` — pre-gate file reads
-- `afterFileEdit` — post-process file edits
-- `stop` — fires when the agent finishes a response
+This is the core difference between cursor-harness and its Claude Code sister project [cc-harness](https://github.com/kev1n1in/cc-harness). Everything else is a direct port; these are the workarounds.
 
-Of these, the first four **respect output JSON fields** like `permission: "allow" | "deny" | "ask"` and can influence what happens next. The `stop` hook fires reliably, but:
+## The Three Notification-Only Hooks
+
+### 1. `stop` — informational only
 
 > "in the beta version, you cannot do much here other than record this information — Cursor doesn't respect any output json here currently, such as stopping the task or adding context."
 >
 > — [GitButler — Deep Dive into the new Cursor Hooks](https://blog.gitbutler.com/cursor-hooks-deep-dive)
 
-This is corroborated by multiple forum bug reports:
-- [Hook ASK output not stopping agent](https://forum.cursor.com/t/hook-ask-output-not-stopping-agent/149002) — even `beforeShellExecution` ASK responses sometimes fail to interrupt
-- [Hook response fields user_message / agent_message still ignored in Windows v2.0.77](https://forum.cursor.com/t/regression-hook-response-fields-user-message-agent-message-still-ignored-in-windows-v2-0-77/142589) — the mechanism for injecting context back into the agent is flaky on Windows
+Means the "auto-evaluate before reply, block on FAIL" pattern can't be hook-enforced on Cursor.
+
+### 2. `afterFileEdit` — notification only
+
+Confirmed by multiple sources:
+- [GitButler deep dive](https://blog.gitbutler.com/cursor-hooks-deep-dive): *"Like the `beforeSubmitPrompt` hook, this is informational only — you cannot communicate to the user, agent or stop the agent with json output here."*
+- [johnlindquist/cursor-hooks type definitions](https://github.com/johnlindquist/cursor-hooks): `afterFileEdit` → *"Response: None (this is a notification hook)"*
+
+Means "after edit → run typecheck → inject error to agent" is **not possible at hook level** on Cursor. This is the one I missed in the initial release and have now documented.
+
+### 3. `beforeSubmitPrompt` — notification only
+
+Fires when the user sends a prompt, but Cursor ignores the output. Means "filter / rewrite the user's prompt before the agent sees it" is not available.
+
+## The Workaround for Each
+
+### For `stop` (verification gate)
+
+cursor-harness moves the verification protocol from a hook into `.cursor/rules/03-verification.mdc` with `alwaysApply: true`. The rule text mandates the agent itself runs the critic → fix → re-verify loop before replying. This is **prompt-level enforcement** — less reliable than cc-harness's hook-level, but the best available on Cursor 1.7 beta.
+
+Consequences:
+- The protocol runs in the main agent's context, costing more tokens than cc-harness's subagent-isolated version
+- If the model is distracted, context-rotted, or given contradictory instructions, it might skip the protocol. There is no hook catching that. cc-harness does not have this failure mode
+
+### For `afterFileEdit` (computational sensors)
+
+Since the hook can't feed errors back to the agent, cursor-harness's `after-edit-typecheck.sh` is **observability-only**: it runs the typecheck and writes the result as a line in `.cursor-harness/typecheck-results.jsonl`. The hook never tries to return `agentMessage` — that would be ignored.
+
+Module 03's verification protocol (in `.cursor/rules/03-verification.mdc`) instructs the agent to **run typecheck itself** during its own pre-reply checks. The hook's JSONL log is a **cross-check / audit trail** the agent can read if it wants a second opinion, and a post-hoc log the human can inspect.
+
+In other words: on Cursor, the agent does the typecheck in-band. The hook just records what it saw in the background.
+
+### For `beforeSubmitPrompt`
+
+Not used by cursor-harness. Listed here for completeness.
+
+## The Forum Bug Reports (context ambiguity for the `before*` hooks)
+
+Even the hooks that *are* supposed to respect output have issues:
+- [Hook ASK output not stopping agent](https://forum.cursor.com/t/hook-ask-output-not-stopping-agent/149002) — `beforeShellExecution` ASK responses sometimes fail to interrupt
+- [Hook response fields user_message / agent_message still ignored in Windows v2.0.77](https://forum.cursor.com/t/regression-hook-response-fields-user-message-agent-message-still-ignored-in-windows-v2-0-77/142589) — historical regression; note the correct field names are `userMessage` / `agentMessage` (camelCase) — snake_case is a forum-thread typo
 
 ### What cc-harness does (that cursor-harness cannot)
 
@@ -40,33 +81,25 @@ Together, these let cc-harness run the entire verification protocol **outside th
 
 Cursor's stop hook can't block, and Cursor doesn't have first-class subagents spawnable from hooks. Neither mechanism is available.
 
-## How cursor-harness Compensates
+## What Works (the two enforceable patterns)
 
-### 1. Rules-level enforcement of the verification protocol
+### `beforeShellExecution` + `beforeReadFile` for module 06
 
-`.cursor/rules/03-verification.mdc` defines the full critic→fix→re-verify protocol as a **mandatory rule the agent must follow**. This is prompt engineering, not hook enforcement. Consequences:
+These hooks **do** respect output JSON. `scripts/sensitive-file-guard.sh` wired to both events can return:
 
-| Property | cc-harness | cursor-harness |
-|---|---|---|
-| Enforcement | Hook — cannot be skipped | Rule — model must remember |
-| Main context cost (successful write task) | ~300 tokens | ~1500+ tokens |
-| Read-only turn detection | Bash transcript scan, zero main cost | Rule text: "skip if read-only" — trusts the agent |
-| Escape from loop | Code: `stop_hook_active` flag, 3-round cap | Rule text: "after 3 rounds, escalate" — trusts the agent |
-| Robustness under distraction | Model cannot opt out | Model can forget |
+```json
+{
+  "permission": "deny",
+  "agentMessage": "why the agent should stop trying this",
+  "userMessage": "what to show the human"
+}
+```
 
-### 2. `afterFileEdit` as a computational sensor
+This is roughly equivalent to cc-harness's PreToolUse guard. Caveat: the ASK interrupt bug ([forum #149002](https://forum.cursor.com/t/hook-ask-output-not-stopping-agent/149002)) can affect the ASK verb — DENY is reliable, ASK is historically flaky.
 
-`scripts/after-edit-typecheck.sh` runs typecheck after every edit. Where it works, output is injected via the `user_message` field (Cursor's documented way to push information into the agent's next step).
+### `beforeMCPExecution` for MCP tools
 
-**Known bug**: `user_message` / `agent_message` fields are ignored on Windows in some 2.0.x versions ([forum issue #142589](https://forum.cursor.com/t/regression-hook-response-fields-user-message-agent-message-still-ignored-in-windows-v2-0-77/142589)). cursor-harness also writes the error to stderr as a belt-and-suspenders fallback — at least it gets logged somewhere.
-
-### 3. `stop` hook for observation only
-
-`scripts/stop-logger.sh` appends every stop event to `.cursor-harness/stop-log.jsonl`. Since the hook can't block, all it can do is observe. But observation is the foundation of module 05 (observability), and this log lets you audit *post hoc* whether the agent actually ran the verification protocol.
-
-### 4. `beforeShellExecution` and `beforeReadFile` for module 06
-
-Good news: these hooks *do* respect the `permission: "deny"` field (with the caveat from the ASK bug above). `scripts/sensitive-file-guard.sh` denies access to files matching the denylist for both of these events. This is mostly equivalent to cc-harness's PreToolUse guard.
+Same enforcement surface as the shell hook but applied to MCP tool calls. cursor-harness doesn't ship a script for this yet (no MCP servers assumed in the base install), but the hook is available if you add one.
 
 ## Honest Failure Modes
 
@@ -74,12 +107,14 @@ Given the above, here is what cursor-harness can and cannot catch:
 
 | Failure mode | cc-harness | cursor-harness |
 |---|---|---|
-| Agent says "done" without running typecheck | Blocked by hook | Rule — model must comply |
-| Agent ignores typecheck failure from `afterFileEdit` | Blocked by hook injection | Works where `user_message` works; stderr fallback on Windows |
-| Agent edits `.env` | Blocked by PreToolUse | Blocked by `beforeReadFile` / shell guard (with ASK beta caveat) |
-| Agent force-pushes without confirmation | Blocked by PreToolUse | Blocked by `beforeShellExecution` (same caveat) |
+| Agent says "done" without running typecheck | Hook blocks at Stop | **Rule** — model must comply. If model forgets, nothing catches it |
+| Agent ignores typecheck failure after edit | Hook injects error via stderr | **Rule** — model must run typecheck in-band per module 03 protocol. Hook logs to JSONL as audit trail only |
+| Agent edits `.env` | Hook blocks at PreToolUse | Hook blocks at `beforeReadFile` (DENY reliable) |
+| Agent force-pushes without confirmation | Hook blocks at PreToolUse | Hook blocks at `beforeShellExecution` (DENY reliable) |
 | Agent gets stuck in a fix loop | 3-round hard cap in code | 3-round cap in rules — agent must count |
 | Eval burns main context | Subagent isolation (~300 tok) | In main context (~1500+ tok) |
+
+**The common thread:** whenever enforcement lands on a `before*` hook, cursor-harness and cc-harness are roughly equivalent. Whenever it lands on `stop` or `afterFileEdit` (both notification-only), cursor-harness falls back to rules and loses hook-level guarantees.
 
 ## When Will This Be Fixed?
 

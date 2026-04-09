@@ -1,19 +1,29 @@
 #!/usr/bin/env bash
 # after-edit-typecheck.sh — Cursor afterFileEdit hook.
 #
-# Module 03 computational sensor. After the agent edits a file, walk up to
-# the nearest package.json, detect the package manager, and run `typecheck`
-# if defined. On failure, emit a user_message JSON field to push the error
-# back into the agent's context.
+# IMPORTANT: afterFileEdit is a NOTIFICATION hook. Per Cursor's hook
+# spec, no stdout response is expected and any returned JSON would be
+# ignored. That means this hook CANNOT inject typecheck errors back
+# into the agent's context directly.
 #
-# Known Cursor 1.7 bug: user_message / agent_message hook output fields are
-# ignored on Windows in some versions (see forum bug #142589). Falls back to
-# stderr in those cases, which is at least logged.
+# What we do instead (module 05 observability):
+#   1. Walk up from the edited file to find the nearest package.json
+#   2. Run `typecheck` if defined
+#   3. Append a JSONL result line to .cursor-harness/typecheck-results.jsonl
+#      so you (the human) can audit post-hoc, and so the agent — if it
+#      follows module 03 — can read this file during its own verification
+#      protocol to cross-check its work
+#
+# Module 03 still requires the agent to run typecheck itself as part of
+# the verification protocol. This hook is a safety net / audit log, not
+# a feedback channel.
 
 set -o pipefail
 
-TRACE_LOG=".cursor-harness/after-edit-trace.log"
-mkdir -p .cursor-harness 2>/dev/null
+LOG_DIR=".cursor-harness"
+LOG_FILE="$LOG_DIR/typecheck-results.jsonl"
+TRACE_LOG="$LOG_DIR/after-edit-trace.log"
+mkdir -p "$LOG_DIR" 2>/dev/null
 
 PY=""
 for cand in python3 python py; do
@@ -21,93 +31,114 @@ for cand in python3 python py; do
     PY="$cand"; break
   fi
 done
-[ -z "$PY" ] && { printf '{"permission": "allow"}'; exit 0; }
+# No python → nothing to do (hook is informational, just exit)
+[ -z "$PY" ] && exit 0
 
 PAYLOAD=""
 if [ ! -t 0 ]; then
   PAYLOAD=$(cat)
 fi
 
-# Cursor's afterFileEdit payload shape includes file_path (and potentially
-# diff metadata). Parse defensively.
+# Cursor's afterFileEdit payload shape (verified from docs):
+#   {
+#     "conversation_id": "...",
+#     "generation_id": "...",
+#     "file_path": "README.md",
+#     "edits": [{"old_string": "...", "new_string": "..."}],
+#     "hook_event_name": "afterFileEdit",
+#     "workspace_roots": ["/abs/path"]
+#   }
 FILE=$(printf '%s' "$PAYLOAD" | "$PY" -c "import sys,json
 try:
     d=json.load(sys.stdin)
-    print(d.get('file_path') or d.get('filePath') or (d.get('tool_input') or {}).get('file_path') or '')
+    print(d.get('file_path') or '')
 except Exception:
     pass" 2>/dev/null)
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] edit $FILE" >> "$TRACE_LOG" 2>/dev/null
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] afterFileEdit file=${FILE:-<empty>}" >> "$TRACE_LOG" 2>/dev/null
 
 if [ -z "$FILE" ]; then
-  printf '{"permission": "allow"}'
   exit 0
 fi
 
-# Walk up to find package.json
+# Walk up to find package.json (try relative first, then workspace_root + relative)
 DIR=$(dirname "$FILE")
 PKG_DIR=""
-while [ "$DIR" != "/" ] && [ "$DIR" != "." ] && [ -n "$DIR" ]; do
-  if [ -f "$DIR/package.json" ]; then
-    PKG_DIR="$DIR"
+# Try absolute walk-up first (if FILE is absolute)
+CHECK_DIR="$DIR"
+while [ "$CHECK_DIR" != "/" ] && [ "$CHECK_DIR" != "." ] && [ -n "$CHECK_DIR" ]; do
+  if [ -f "$CHECK_DIR/package.json" ]; then
+    PKG_DIR="$CHECK_DIR"
     break
   fi
-  DIR=$(dirname "$DIR")
+  CHECK_DIR=$(dirname "$CHECK_DIR")
 done
 
+# If not found AND FILE is relative, try under workspace_roots[0]
 if [ -z "$PKG_DIR" ]; then
-  printf '{"permission": "allow"}'
-  exit 0
+  WSROOT=$(printf '%s' "$PAYLOAD" | "$PY" -c "import sys,json
+try:
+    d=json.load(sys.stdin)
+    roots=d.get('workspace_roots') or []
+    print(roots[0] if roots else '')
+except Exception:
+    pass" 2>/dev/null)
+  if [ -n "$WSROOT" ] && [ -f "$WSROOT/package.json" ]; then
+    PKG_DIR="$WSROOT"
+  fi
 fi
+
+[ -z "$PKG_DIR" ] && exit 0
 
 # Detect package manager
 PM="npm"
-if   [ -f "$PKG_DIR/pnpm-lock.yaml" ]; then PM="pnpm"
-elif [ -f "$PKG_DIR/yarn.lock" ];      then PM="yarn"
+if   [ -f "$PKG_DIR/pnpm-lock.yaml" ];    then PM="pnpm"
+elif [ -f "$PKG_DIR/yarn.lock" ];         then PM="yarn"
 elif [ -f "$PKG_DIR/package-lock.json" ]; then PM="npm"
 fi
 
-cd "$PKG_DIR" || { printf '{"permission": "allow"}'; exit 0; }
+cd "$PKG_DIR" || exit 0
 
 HAS_TYPECHECK=$("$PY" -c "import json; d=json.load(open('package.json')); print('1' if 'typecheck' in d.get('scripts',{}) else '0')" 2>/dev/null)
 
 if [ "$HAS_TYPECHECK" != "1" ]; then
-  printf '{"permission": "allow"}'
   exit 0
 fi
 
 TC_OUTPUT=$(timeout 60 "$PM" run typecheck 2>&1)
 TC_EXIT=$?
 
-if [ "$TC_EXIT" -eq 0 ] || [ "$TC_EXIT" -eq 124 ]; then
-  # Pass or timeout → don't pester the agent
-  printf '{"permission": "allow"}'
-  exit 0
-fi
+# Log result as JSONL — this is the audit trail the agent can read during
+# module 03 verification if it wants a second opinion on whether its own
+# typecheck run was authoritative.
+export HARNESS_FILE="$FILE"
+export HARNESS_PKG_DIR="$PKG_DIR"
+export HARNESS_PM="$PM"
+export HARNESS_EXIT="$TC_EXIT"
+export HARNESS_OUTPUT_TAIL=$(printf '%s' "$TC_OUTPUT" | tail -30)
+export HARNESS_LOG_FILE="$LOG_FILE"
 
-# Failure — inject warning via user_message field (Cursor's mechanism for
-# pushing information into the agent's next turn). Fall back to stderr for
-# Windows cases where user_message is ignored.
-LAST_LINES=$(printf '%s' "$TC_OUTPUT" | tail -30)
+"$PY" - <<'PY_EOF' 2>/dev/null
+import os, json, datetime
 
-# Escape for JSON
-MSG=$("$PY" -c "import sys,json; print(json.dumps(sys.stdin.read()))" <<EOF
-[cursor-harness/module-03 computational sensor] typecheck FAILED after edit to $(basename "$FILE") in $(basename "$PKG_DIR"):
+line = {
+    "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+    "event": "afterFileEdit.typecheck",
+    "file_path": os.environ.get("HARNESS_FILE", ""),
+    "package_dir": os.environ.get("HARNESS_PKG_DIR", ""),
+    "package_manager": os.environ.get("HARNESS_PM", ""),
+    "exit_code": int(os.environ.get("HARNESS_EXIT", "0") or 0),
+    "status": "PASS" if os.environ.get("HARNESS_EXIT") == "0" else ("TIMEOUT" if os.environ.get("HARNESS_EXIT") == "124" else "FAIL"),
+    "tail": os.environ.get("HARNESS_OUTPUT_TAIL", "")[-3000:],
+}
 
-$LAST_LINES
+try:
+    with open(os.environ.get("HARNESS_LOG_FILE", ".cursor-harness/typecheck-results.jsonl"), "a", encoding="utf-8") as f:
+        f.write(json.dumps(line, ensure_ascii=False) + "\n")
+except Exception:
+    pass
+PY_EOF
 
-Per module 03 verification protocol, you MUST investigate and fix this before proceeding. Do not ignore this warning — it is a hard sensor signal.
-EOF
-)
-
-printf '{"permission": "allow", "user_message": %s}' "$MSG"
-
-# Also emit to stderr as belt-and-suspenders for the Windows user_message bug
-{
-  echo "[cursor-harness/module-03] typecheck FAILED after edit to $(basename "$FILE")"
-  echo "[cursor-harness/module-03] last 30 lines:"
-  printf '%s\n' "$LAST_LINES"
-  echo "[cursor-harness/module-03] per module 03 protocol, fix before proceeding"
-} >&2
-
+# afterFileEdit is a notification hook — no structured response expected.
+# Exit cleanly without printing anything to stdout.
 exit 0

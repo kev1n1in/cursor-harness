@@ -15,11 +15,17 @@ alwaysApply: true
 
 ## Why The Mechanism Is Different On Cursor
 
-On Claude Code, this protocol is enforced by a Stop hook that spawns an evaluator subagent in isolated context. On Cursor, **the Stop hook is read-only in 1.7 beta** ([GitButler deep dive](https://blog.gitbutler.com/cursor-hooks-deep-dive), [Cursor forum bug reports](https://forum.cursor.com/t/hook-ask-output-not-stopping-agent/149002)). Hook-level enforcement is not available. Therefore this module is **enforced by rule** — which means *you* must remember to run it.
+On Claude Code, this protocol is enforced by a Stop hook that spawns an evaluator subagent in isolated context. On Cursor, **two critical hooks are notification-only in 1.7 beta**:
+
+- **`stop`** is informational-only — Cursor ignores any JSON returned by the hook, so you cannot block the agent from replying or inject evaluation results back ([GitButler deep dive](https://blog.gitbutler.com/cursor-hooks-deep-dive))
+- **`afterFileEdit`** is also notification-only — the hook fires after every edit but cannot surface typecheck/lint errors back to the agent
+
+Hook-level enforcement of "evaluate before reply" and "inject typecheck errors after edit" are both unavailable. Therefore this module is **enforced by rule** — which means *you* must remember to run it, and *you* must run the computational sensors in-band as part of your own turn.
 
 Consequences:
 - This protocol runs in your main context, burning more tokens than the Claude Code equivalent
-- You are trusted to actually run it. If you skip it, nothing catches you. Don't skip it
+- If you skip it, nothing catches you. Don't skip it
+- `afterFileEdit` still runs `scripts/after-edit-typecheck.sh` in the background and writes results to `.cursor-harness/typecheck-results.jsonl` — you can read that file as a **cross-check / audit trail**, but you should still run typecheck yourself as the primary signal
 
 See `docs/LIMITATIONS.md` for the full technical reason.
 
@@ -48,17 +54,19 @@ If **none** of the above happened this turn → **skip verification, reply direc
 
 If **any** happened → proceed to Step 2.
 
-### Step 2 — Run computational sensors
+### Step 2 — Run computational sensors (in your own terminal, not via hook)
 
-These are cheap, deterministic, and non-negotiable:
+These are cheap, deterministic, and non-negotiable. **You must run them yourself**. The `afterFileEdit` hook in Cursor is notification-only and cannot push errors back to you — don't rely on it.
 
-1. **Typecheck** — if the package under the edited file has a `typecheck` script, run it:
+1. **Typecheck** — if the package under the edited file has a `typecheck` script, run it in your terminal:
    - `pnpm typecheck` / `npm run typecheck` / `yarn typecheck`
    - Timeout 60 seconds
 2. **Tests near the edit** — if there's a test file adjacent to the edited file (e.g., `foo.ts` → `foo.test.ts`), run just that file
 3. **Lint** — if cheap (`eslint` / `ruff` / `rubocop`), run it
 
 Capture exit codes and the last 30 lines of any failure as **evidence**.
+
+**Optional cross-check**: `scripts/after-edit-typecheck.sh` runs the same typecheck in the background every time you edit a file and appends results to `.cursor-harness/typecheck-results.jsonl`. You can `tail -1` that file as a second opinion — if its verdict disagrees with yours, investigate before trusting either.
 
 ### Step 3 — Run the inferential sensor (self-review)
 
